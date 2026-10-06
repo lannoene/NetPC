@@ -217,6 +217,13 @@ public:
         if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
             puts("could not init wsadata");
         }
+        timeBeginPeriod(1);
+#endif
+    }
+    static void DeinitNetworking() {
+#ifdef _WIN32
+        WSACleanup();
+        timeEndPeriod(1);
 #endif
     }
     enum class BlockingType {
