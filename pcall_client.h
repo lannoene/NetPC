@@ -8,17 +8,17 @@ class PC_Client : public PC_Base {
 public:
     struct Server : public BasePeer {
         NetAddress_t addr;
-        virtual void SendPacket(const Network::Packet& p, u32 flags = 0) {
+        virtual void SendPacket(const NetPC::Packet& p, u32 flags = 0) {
             SendPacketType(PK_CLT_DATA, p, flags);
         }
         PC_Client *client;
         bool authenticated;
     private:
-        virtual bool Send(const Network::Packet& p) {
+        virtual bool Send(const NetPC::Packet& p) {
             return client->socket.SendTo(p, &addr);
         }
         virtual void SendPacketAcknowledgement(u32 seq_num, u32 fragment_index) {
-            Network::Packet packet_ack;
+            NetPC::Packet packet_ack;
             bool use_protocol = false;
             u8 msg_type = PK_CLT_PACKET_ACK;
             packet_ack << use_protocol;
@@ -66,6 +66,7 @@ private:
     
     virtual void ReceivePackets();
     virtual void SendProtocolPackets();
+    virtual void CheckPeerTimeouts();
     
     std::shared_ptr<Server> server;
 };

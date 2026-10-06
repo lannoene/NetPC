@@ -6,7 +6,7 @@ std::shared_ptr<PC_Client::Server> PC_Client::Connect(const NetAddress_t& addr, 
     server->addr = addr;
     server->client = this;
     server->authenticated = false;
-    Network::Packet packet;
+    NetPC::Packet packet;
     bool uses_protocol = false;
     u8 msg_type = PK_CLT_AUTH_REQ;
     packet << uses_protocol;
@@ -26,15 +26,18 @@ std::shared_ptr<PC_Client::Server> PC_Client::Connect(const NetAddress_t& addr, 
 void PC_Client::ReceivePackets() {
     PROFILE_FUNCTION;
     NetAddress_t addr;
-    Network::Packet packet;
+    NetPC::Packet packet;
     if (int rval = socket.ReceiveFrom(addr, packet)) {
         if (rval < 0) { // internal error occurred
             printf("NETPC error: UDPSocket::ReceiveFrom returned error val");
             // not sure what to do here...
-            AddDefaultEvent(PC_EV_TYPE_DISCONNECT);
+            if (server) {
+                AddDefaultEvent(PC_EV_TYPE_DISCONNECT);
+                server.reset();
+            }
             return;
         }
-        if (addr != server->addr) {
+        if (!server || addr != server->addr) {
             // ignore everything not from our server
             return;
         }
@@ -55,6 +58,7 @@ void PC_Client::ReceivePackets() {
                 packet >> resp_code;
                 if (resp_code == PK_RESP_OK) {
                     server->authenticated = true;
+                    server->time_since_last_ping_packet = GetCurrentTimeMs();
                     AddDefaultEvent(PC_EV_TYPE_CONNECT);
                 }
                 break;
@@ -70,10 +74,15 @@ void PC_Client::ReceivePackets() {
                 u64 round_trip_ms = DTime(it->second.ping_send_time_ms);
                 printf("NETPC debug: Current round trip time: %llu ms, ping: %f ms\n", round_trip_ms, static_cast<float>(round_trip_ms) / 2);
                 server->outgoing_pings.erase(it);
+                server->time_since_last_ping_packet = GetCurrentTimeMs();
                 break;
             }
             case PK_SRV_PACKET_ACK: {
                 server->HandleFragmentAcknowledgement(packet);
+                break;
+            }
+            case PK_SRV_EJECT: {
+                // ...we are disconnected...
                 break;
             }
             }
@@ -90,9 +99,13 @@ void PC_Client::ReceivePackets() {
             packet >> msg_type;
             switch (msg_type) {
             case PK_SRV_DATA: {
-                Network::Packet pk;
+                NetPC::Packet pk;
                 pk.Append(reinterpret_cast<const u8*>(packet.GetData()) + 1, packet.GetDataSize() - 1);
                 AddDataPacketEvent(pk, server, ready_packet.flags);
+                break;
+            }
+            case PK_SRV_DISCONNECT_ACK: {
+                
                 break;
             }
             }
@@ -102,8 +115,20 @@ void PC_Client::ReceivePackets() {
 
 void PC_Client::SendProtocolPackets() {
     PROFILE_FUNCTION;
-    if (!server->authenticated) {
+    if (!server || !server->authenticated) {
         return;
     }
     server->ServiceOne();
+}
+
+void PC_Client::CheckPeerTimeouts() {
+    if (!server || !server->authenticated) {
+        return;
+    }
+    if (DTime(server->time_since_last_ping_packet) > max_ping_timeout_ms) {
+        auto& ev = AddDefaultEvent(PC_EV_TYPE_DISCONNECT);
+        ev.peer = server;
+        server.reset();
+        printf("NETPC debug: Server timed out\n");
+    }
 }

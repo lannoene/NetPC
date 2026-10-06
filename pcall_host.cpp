@@ -36,7 +36,7 @@ void BasePeer::ResendReliablePacketFragments() {
     }
 }
 
-void BasePeer::HandlePacketFragment(Network::Packet& packet) {
+void BasePeer::HandlePacketFragment(NetPC::Packet& packet) {
     u32 seq_num;
     u32 flags;
     u32 fragment_index;
@@ -54,7 +54,7 @@ void BasePeer::HandlePacketFragment(Network::Packet& packet) {
            ((flags & PC_SEND_FLAG_RELIABLE) ? "reliable" : "unreliable"),
            sequenced_packet_id);*/
     
-    Network::Packet packet_body;
+    NetPC::Packet packet_body;
     packet_body.Append(reinterpret_cast<const u8*>(packet.GetData()) + packet_header_size, packet.GetDataSize() - packet_header_size);
     
     if (flags & PC_SEND_FLAG_NO_FRAGMENT) {
@@ -88,7 +88,7 @@ void BasePeer::HandlePacketFragment(Network::Packet& packet) {
                     return;
                 }
                 // recover full packet
-                Network::Packet full_packet;
+                NetPC::Packet full_packet;
                 for (auto& frag : fragment_store.frags) {
                     full_packet.Append(reinterpret_cast<const u8*>(frag.packet.GetData()) + packet_header_size, frag.packet.GetDataSize() - packet_header_size);
                 }
@@ -108,7 +108,7 @@ void BasePeer::HandlePacketFragment(Network::Packet& packet) {
             // check if we have received all the fragments
             if (fragment_store.frags.size() == total_fragments) {
                 // recover full packet
-                Network::Packet full_packet;
+                NetPC::Packet full_packet;
                 for (auto& frag : fragment_store.frags) {
                     full_packet.Append(reinterpret_cast<const u8*>(frag.packet.GetData()) + packet_header_size, frag.packet.GetDataSize() - packet_header_size);
                 }
@@ -129,7 +129,7 @@ void BasePeer::HandlePacketFragment(Network::Packet& packet) {
     }
 }
 
-void BasePeer::SendProtocolRaw(const Network::Packet& p, u32 flags) {
+void BasePeer::SendProtocolRaw(const NetPC::Packet& p, u32 flags) {
     u32 sequenced_packet_id = 0;
     if (flags & PC_SEND_FLAG_SEQUENCED) {
         if (flags & PC_SEND_FLAG_RELIABLE) {
@@ -141,7 +141,7 @@ void BasePeer::SendProtocolRaw(const Network::Packet& p, u32 flags) {
     auto send_one_fragment = [&](u32 pk_seq_id, u32 fragment_index, u32 total_fragments) {
         // add header
         bool use_protocol = true;
-        Network::Packet packet;
+        NetPC::Packet packet;
         packet << use_protocol;
         packet << pk_seq_id;
         packet << flags;
@@ -216,11 +216,22 @@ void BasePeer::AddValidAwaitingUnreliableSequencedPacketsToReady() {
     AddValidAwaitingSequencedPacketsToReady(unreliable_seq_packet_store, unreliable_sequenced_packet_recv_seq);
 }
 
+PC_Base::PC_Base() {
+    /*if (static_cast<u32>(socket.GetSendBufferSize()) < default_sndbuf_size) {
+        printf("NETPC debug: Changed socket sendbuf size of %d to %d\n", socket.GetSendBufferSize(), default_sndbuf_size);
+        socket.SetSendBufferSize(default_sndbuf_size);
+    }
+    if (static_cast<u32>(socket.GetRecvBufferSize()) < default_recvbuf_size) {
+        printf("NETPC debug: Changed socket recvbuf size of %d to %d\n", socket.GetRecvBufferSize(), default_recvbuf_size);
+        socket.SetRecvBufferSize(default_recvbuf_size);
+    }*/
+}
+
 bool PC_Base::Service(PC_Event& ev, s64 timeout) {
     PROFILE_FUNCTION;
     ev.type = PC_EV_TYPE_NONE;
     ev.peer = nullptr;
-    ev.pk = std::move(Network::Packet{});
+    ev.pk = std::move(NetPC::Packet{});
     s64 time_start = GetCurrentTimeMs();
     bool can_recv = socket.Poll(POLL_WAIT_RECEIVE, 0) & POLL_WAIT_RECEIVE;
     do {
@@ -228,6 +239,7 @@ bool PC_Base::Service(PC_Event& ev, s64 timeout) {
             ReceivePackets();
         }
         SendProtocolPackets();
+        CheckPeerTimeouts();
         if (event_queue.size()) {
             auto _ev = event_queue.front();
             event_queue.pop();
@@ -254,15 +266,16 @@ u64 PC_Base::GetCurrentTimeMs() {
     return tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-bool PC_Base::ProtocolValidatePacket(const Network::Packet& packet) {
+bool PC_Base::ProtocolValidatePacket(const NetPC::Packet& packet) {
     return packet.GetDataSize() >= packet_header_size;
 }
 
 void PC_Host::ReceivePackets() {
     PROFILE_FUNCTION;
     NetAddress_t addr;
-    Network::Packet packet;
+    NetPC::Packet packet;
     if (int rval = socket.ReceiveFrom(addr, packet)) {
+        printf("Received packet\n");
         if (rval < 0) { // internal error occurred
             printf("NETPC error: UDPSocket::ReceiveFrom returned error val");
             // we have to stop hosting a server
@@ -304,6 +317,7 @@ void PC_Host::ReceivePackets() {
             case PK_CLT_PING: {
                 auto [ping_id, ack_list_save] = client->HandlePingPacket(packet);
                 client->SendPingPacket(PK_SRV_PING_ACK, ping_id, ack_list_save);
+                client->time_since_last_ping_packet = GetCurrentTimeMs();
                 break;
             }
             case PK_CLT_PACKET_ACK: {
@@ -323,7 +337,7 @@ void PC_Host::ReceivePackets() {
             packet >> msg_type;
             switch (msg_type) {
             case PK_CLT_DATA: {
-                Network::Packet pk;
+                NetPC::Packet pk;
                 pk.Append(reinterpret_cast<const u8*>(packet.GetData()) + 1, packet.GetDataSize() - 1);
                 AddDataPacketEvent(pk, client, ready_packet.flags);
                 break;
@@ -337,13 +351,26 @@ void PC_Host::SendProtocolPackets() {
     
 }
 
+void PC_Host::CheckPeerTimeouts() {
+    clients.erase(std::remove_if(clients.begin(), clients.end(), [&](auto client) {
+        auto dtime = PC_Base::DTime(client->time_since_last_ping_packet);
+        if (dtime > max_ping_timeout_ms) {
+            auto& ev = AddDefaultEvent(PC_EV_TYPE_DISCONNECT);
+            ev.peer = client;
+            printf("NETPC debug: Peer timed out\n");
+            return true;
+        }
+        return false;
+    }), clients.end());
+}
+
 bool PC_Host::Init(u16 port) {
     PROFILE_FUNCTION;
     socket.BindToPort(port);
     return true;
 }
 
-bool PC_Host::HandleClientAuthRequestPacket(NetAddress_t& addr, Network::Packet& packet) {
+bool PC_Host::HandleClientAuthRequestPacket(NetAddress_t& addr, NetPC::Packet& packet) {
     PROFILE_FUNCTION;
     auto client = GetAddrClient(addr);
     if (client) { // client is already connected
@@ -353,9 +380,10 @@ bool PC_Host::HandleClientAuthRequestPacket(NetAddress_t& addr, Network::Packet&
     auto new_clt = std::make_shared<Client>();
     new_clt->addr = addr;
     new_clt->host = this;
+    new_clt->time_since_last_ping_packet = GetCurrentTimeMs();
     clients.push_back(new_clt);
     
-    Network::Packet pk_resp;
+    NetPC::Packet pk_resp;
     bool use_protocol = false;
     u8 msg_type = PK_SRV_AUTH_ACK;
     u8 resp_code = PK_RESP_OK;
@@ -366,7 +394,7 @@ bool PC_Host::HandleClientAuthRequestPacket(NetAddress_t& addr, Network::Packet&
     return true;
 }
 
-void PC_Host::BroadcastPacket(Network::Packet& pk, u32 send_flags, std::shared_ptr<Client> exclude) {
+void PC_Host::BroadcastPacket(NetPC::Packet& pk, u32 send_flags, std::shared_ptr<Client> exclude) {
     PROFILE_FUNCTION;
     for (auto cl : clients) {
         if (cl == exclude) {

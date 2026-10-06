@@ -50,7 +50,7 @@ public:
 	NetAddress_s() {};
 	NetAddress_s(unsigned char ip[4], uint16_t port) {
 		memcpy(m_ip, ip, 4);
-		m_port = port;
+		m_port = htons(port);
 	}
     NetAddress_s(const char *ip, uint16_t port) {
         SetFromAddr(ip, port);
@@ -77,14 +77,14 @@ public:
 		
 		SetFromSockadr(&sockInfo);
 	}
-	uint16_t GetPort() {return m_port;}
+	uint16_t GetPort() {return ntohs(m_port);}
 	uint8_t *GetIp() {return m_ip;}
 	void GetIpAsString(char *inpString, size_t maxChars) {
-		snprintf(inpString, maxChars, "%d.%d.%d.%d:%d", m_ip[0], m_ip[1], m_ip[2], m_ip[3], ntohs(m_port));
+		snprintf(inpString, maxChars, "%d.%d.%d.%d:%d", m_ip[0], m_ip[1], m_ip[2], m_ip[3], m_port);
 	}
 	NetAddrType_t GetType() {return m_type;}
 	bool operator==(NetAddress_s& addr) {
-		return (m_type == addr.GetType() && memcmp(m_ip, addr.GetIp(), 4) == 0 && m_port == addr.GetPort());
+		return (m_type == addr.GetType() && memcmp(m_ip, addr.GetIp(), 4) == 0 && m_port == addr.m_port);
 	}
 	void SetType(NetAddrType_t type) {m_type = type;}
 private:
@@ -225,8 +225,8 @@ public:
     };
     void SetBlockingType(BlockingType bl) {
         if (bl == BlockingType::BLOCKING) {
-            unsigned long i_true = true;
 #ifdef _WIN32
+            unsigned long i_true = true;
             if (ioctlsocket(_socket, FIONBIO, &i_true) == SOCKET_ERROR) {
                 printf("Could not set nonblocking sockets");
             }
@@ -236,8 +236,8 @@ public:
             }
 #endif
         } else {
-            unsigned long i_false = true;
 #ifdef _WIN32
+            unsigned long i_false = false;
             if (ioctlsocket(_socket, FIONBIO, &i_false) == SOCKET_ERROR) {
                 printf("Could not set blocking sockets\n");
             }
@@ -248,6 +248,34 @@ public:
             }
 #endif
         }
+    }
+    bool SetRecvBufferSize(int value) {
+        return setsockopt(_socket, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char*>(&value), sizeof(int)) >= 0;
+    }
+    bool SetSendBufferSize(int value) {
+        return setsockopt(_socket, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char*>(&value), sizeof(int)) >= 0;
+    }
+    int GetRecvBufferSize() {
+        int value;
+#ifndef _WIN32
+        socklen_t len;
+#else
+        int len;
+#endif
+        len = sizeof(value);
+        getsockopt(_socket, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char*>(&value), &len);
+        return value;
+    }
+    int GetSendBufferSize() {
+        int value;
+#ifndef _WIN32
+        socklen_t len;
+#else
+        int len;
+#endif
+        len = sizeof(value);
+        getsockopt(_socket, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char*>(&value), &len);
+        return value;
     }
 protected:
 	std::map<int, std::function<void(NetAddress_t&)>> errCallback;

@@ -26,6 +26,9 @@ constexpr static inline u64    max_reliable_packet_retry_begin_ms = 400;
 constexpr static inline u64    max_reliable_packet_retry_interval_ms = 60;
 constexpr static inline u64    max_unreliable_sequenced_packet_wait_ms = 120;
 constexpr static inline u64    max_ping_cache_wait_ms = 30000;
+constexpr static inline u64    max_ping_timeout_ms = 60000;
+constexpr static inline u32    default_sndbuf_size = 0x40000;
+constexpr static inline u32    default_recvbuf_size = 0x40000;
 
 enum _pc_type {
     PC_EV_TYPE_NONE = 0,
@@ -46,15 +49,15 @@ class PC_Host;
 class PC_Client;
 
 struct BasePeer {
-    void SendPacketType(u8 msg_type, const Network::Packet& p, u32 flags = 0) {
-        Network::Packet packet;
+    void SendPacketType(u8 msg_type, const NetPC::Packet& p, u32 flags = 0) {
+        NetPC::Packet packet;
         packet << msg_type;
         packet.Append(p.GetData(), p.GetDataSize());
         SendProtocolRaw(packet, flags);
     }
-    void SendProtocolRaw(const Network::Packet& p, u32 flags = 0);
+    void SendProtocolRaw(const NetPC::Packet& p, u32 flags = 0);
     struct ReadyPacket {
-        Network::Packet packet;
+        NetPC::Packet packet;
         u32 flags;
     };
     ReadyPacket PopNextReadyPacket() {
@@ -72,17 +75,17 @@ struct BasePeer {
     virtual ~BasePeer() = default;
 private:
     // sends 1 raw UDP packet
-    virtual bool Send(const Network::Packet& p) = 0;
+    virtual bool Send(const NetPC::Packet& p) = 0;
     virtual void ServiceOne();
-    void HandlePacketFragment(Network::Packet& packet);
+    void HandlePacketFragment(NetPC::Packet& packet);
     virtual void SendPacketAcknowledgement(u32 seq_num, u32 fragment_index) = 0;
     void InvalidateUnreliableFragmentCachePackets();
     void ResendReliablePacketFragments();
-    //void AddUnacknowledgedFragmentsToPacket(Network::Packet& packet, std::map<u32, PacketFragmentStore>& packet_frag_store) {
+    //void AddUnacknowledgedFragmentsToPacket(NetPC::Packet& packet, std::map<u32, PacketFragmentStore>& packet_frag_store) {
         
     //}
     void SendPingPacket(u8 msg_type, u32 ping_id, std::vector<u32> ack_list_save) {
-        Network::Packet resp;
+        NetPC::Packet resp;
         bool uses_protocol = false;
         resp << uses_protocol;
         resp << msg_type;
@@ -105,7 +108,7 @@ private:
         }
         Send(resp);
     }
-    std::tuple<u32, std::vector<u32>> HandlePingPacket(Network::Packet& packet) {
+    std::tuple<u32, std::vector<u32>> HandlePingPacket(NetPC::Packet& packet) {
         u32 ping_id;
         u32 cl_num_packets;
         packet >> ping_id;
@@ -137,7 +140,7 @@ private:
         }
         return std::make_tuple(ping_id, ack_list_save);
     }
-    void HandleFragmentAcknowledgement(Network::Packet& packet) {
+    void HandleFragmentAcknowledgement(NetPC::Packet& packet) {
         u32 seq_num;
         u32 fragment_index;
         packet >> seq_num;
@@ -175,7 +178,7 @@ private:
     std::list<ReadyPacket> received_ready_packets;
     struct PacketFragmentStore {
         struct PacketFragment {
-            Network::Packet packet;
+            NetPC::Packet packet;
             mutable bool acknowledged;
             u32 frag_index;
             bool operator<(const PacketFragment& o) const {
@@ -198,7 +201,7 @@ private:
     std::atomic<u32> reliable_sequenced_packet_send_seq{}; // protocol starts at 1 and it keeps track of only sequenced packets
     u32 reliable_sequenced_packet_recv_seq{}; // keeps track of the last sequenced packet id we've added to the ready queue
     struct SequencePacketStore {
-        Network::Packet packet;
+        NetPC::Packet packet;
         u32 sequence_id;
         u64 timestamp;
         u32 flags;
@@ -213,11 +216,12 @@ private:
     u32 unreliable_sequenced_packet_recv_seq{};
     std::set<SequencePacketStore> unreliable_seq_packet_store; // stores sequenecd packets like the reliable version,
                                                                // but this version contains a timeout.
+    u64 time_since_last_ping_packet; // time since last ping send or ack
 };
 
 struct PC_Event {
     enum _pc_type type;
-    Network::Packet pk;
+    NetPC::Packet pk;
     u32 pk_flags;
     std::shared_ptr<BasePeer> peer;
 };
@@ -228,20 +232,22 @@ public:
     static u64 GetCurrentTimeMs();
     static u64 DTime(u64 start_time) {return GetCurrentTimeMs() - start_time;}
 protected:
+    PC_Base();
     UDPSocket socket;
-    std::list<Network::Packet> reliable_packets_receive_queue;
+    std::list<NetPC::Packet> reliable_packets_receive_queue;
     std::queue<PC_Event> event_queue;
     
     virtual void ReceivePackets() = 0;
     virtual void SendProtocolPackets() = 0;
-    bool ProtocolValidatePacket(const Network::Packet& packet);
+    virtual void CheckPeerTimeouts() = 0;
+    bool ProtocolValidatePacket(const NetPC::Packet& packet);
     
     PC_Event& AddDefaultEvent(enum _pc_type ev_type) {
         auto& ev = event_queue.emplace();
         ev.type = ev_type;
         return ev;
     }
-    void AddDataPacketEvent(Network::Packet& p, std::shared_ptr<BasePeer> peer, u32 packet_flags) {
+    void AddDataPacketEvent(NetPC::Packet& p, std::shared_ptr<BasePeer> peer, u32 packet_flags) {
         auto& ev = AddDefaultEvent(PC_EV_TYPE_RECEIVE);
         ev.pk = p;
         ev.peer = peer;
@@ -256,6 +262,8 @@ enum PK_PC_SRV_TYPE {
     PK_SRV_PING_ACK,
     PK_SRV_PACKET_ACK,
     PK_SRV_RELIABLE_RECV_LIST, // TODO
+    PK_SRV_DISCONNECT_ACK,
+    PK_SRV_EJECT,
 };
 
 enum PK_PC_CLT_TYPE {
@@ -265,6 +273,7 @@ enum PK_PC_CLT_TYPE {
     PK_CLT_PING,
     PK_CLT_PACKET_ACK,
     PK_CLT_RELIABLE_RECV_LIST,
+    PK_CLT_DISCONNECT,
 };
 
 enum PK_RESP_ERROR_CODE {
@@ -278,15 +287,15 @@ public:
     struct Client : public BasePeer {
         NetAddress_t addr;
         PC_Host *host;
-        virtual void SendPacket(const Network::Packet& p, u32 flags = 0) {
+        virtual void SendPacket(const NetPC::Packet& p, u32 flags = 0) {
             SendPacketType(PK_SRV_DATA, p, flags);
         }
     private:
-        virtual bool Send(const Network::Packet& p) {
+        virtual bool Send(const NetPC::Packet& p) {
             return host->socket.SendTo(p, &addr);
         }
         virtual void SendPacketAcknowledgement(u32 seq_num, u32 fragment_index) {
-            Network::Packet packet_ack;
+            NetPC::Packet packet_ack;
             bool use_protocol = false;
             u8 msg_type = PK_SRV_PACKET_ACK;
             packet_ack << use_protocol;
@@ -298,7 +307,7 @@ public:
         friend class PC_Host;
         friend class PC_Client;
     };
-    void BroadcastPacket(Network::Packet& pk, u32 send_flags, std::shared_ptr<Client> exclude = nullptr);
+    void BroadcastPacket(NetPC::Packet& pk, u32 send_flags, std::shared_ptr<Client> exclude = nullptr);
 private:
     std::list<std::shared_ptr<Client>> clients;
     
@@ -313,7 +322,8 @@ private:
     
     virtual void ReceivePackets();
     virtual void SendProtocolPackets();
+    virtual void CheckPeerTimeouts();
     
     // packet handlers
-    bool HandleClientAuthRequestPacket(NetAddress_t& addr, Network::Packet& packet);
+    bool HandleClientAuthRequestPacket(NetAddress_t& addr, NetPC::Packet& packet);
 };
