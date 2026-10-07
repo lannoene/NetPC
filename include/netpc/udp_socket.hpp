@@ -2,7 +2,7 @@
 
 #include "socket_base.hpp"
 #ifdef __3DS__
-#include "../light_mutex.hpp"
+#include "../../source/light_mutex.hpp"
 #endif
 #include "packet.h"
 

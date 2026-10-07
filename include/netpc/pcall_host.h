@@ -13,7 +13,7 @@
 #ifndef __3DS__
 using PC_Mutex = std::mutex;
 #else
-#include "../light_mutex.hpp"
+#include "../../source/light_mutex.hpp"
 using PC_Mutex = LightMutex;
 #endif
 

@@ -19,9 +19,7 @@
 #include <cstdio>
 #include <cstring>
 
-#ifdef __3DS__
-#include "../debug_log.hpp"
-#else
+#ifndef __3DS__
 #define PROFILE_FUNCTION
 #endif
 
