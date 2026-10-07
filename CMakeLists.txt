@@ -16,4 +16,4 @@ if (WIN32)
 	target_link_libraries(netpc ws2_32)
 endif()
 
-target_include_directories(netpc PRIVATE include/netpc/)
+target_include_directories(netpc PRIVATE include/)
