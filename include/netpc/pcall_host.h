@@ -49,6 +49,11 @@ class PC_Host;
 class PC_Client;
 
 struct BasePeer {
+public:
+    virtual void SendPacket(const NetPC::Packet& p, u32 flags = 0) = 0;
+    virtual ~BasePeer() = default;
+    std::string GetIPAddress() {return "";} // TODO
+protected:
     void SendPacketType(u8 msg_type, const NetPC::Packet& p, u32 flags = 0) {
         NetPC::Packet packet;
         packet << msg_type;
@@ -72,7 +77,6 @@ struct BasePeer {
     size_t NumPacketsReady() {
         return received_ready_packets.size();
     }
-    virtual ~BasePeer() = default;
 private:
     // sends 1 raw UDP packet
     virtual bool Send(const NetPC::Packet& p) = 0;

@@ -11,7 +11,7 @@
 #include <string>
 #include <cstdint>
 
-#include "packet.h"
+#include "netpc/packet.h"
 
 namespace NetPC {
 
