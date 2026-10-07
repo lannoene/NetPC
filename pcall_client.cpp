@@ -29,7 +29,7 @@ void PC_Client::ReceivePackets() {
     NetPC::Packet packet;
     if (int rval = socket.ReceiveFrom(addr, packet)) {
         if (rval < 0) { // internal error occurred
-            printf("NETPC error: UDPSocket::ReceiveFrom returned error val");
+            printf("NETPC error: UDPSocket::ReceiveFrom returned error val\n");
             // not sure what to do here...
             if (server) {
                 AddDefaultEvent(PC_EV_TYPE_DISCONNECT);

@@ -1,6 +1,6 @@
 #include "netpc/udp_socket.hpp"
 
-#define MAX_MSG_BUF_SIZE 2000
+#define MAX_MSG_BUF_SIZE 4028
 #ifndef _WIN32
 #define WSAEWOULDBLOCK EWOULDBLOCK
 #endif

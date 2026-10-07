@@ -275,7 +275,6 @@ void PC_Host::ReceivePackets() {
     NetAddress_t addr;
     NetPC::Packet packet;
     if (int rval = socket.ReceiveFrom(addr, packet)) {
-        printf("Received packet\n");
         if (rval < 0) { // internal error occurred
             printf("NETPC error: UDPSocket::ReceiveFrom returned error val");
             // we have to stop hosting a server
